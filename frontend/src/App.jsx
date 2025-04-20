@@ -16,6 +16,7 @@ function App() {
   const [prediction, setPrediction] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [dropdownError, setDropdownError] = useState(null);
 
   const [companies, setCompanies] = useState([]);
   const [carModels, setCarModels] = useState([]);
@@ -25,54 +26,57 @@ function App() {
   useEffect(() => {
     const fetchDropdownData = async () => {
       try {
-        console.log("Fetching data from:", `${EXPRESS_URL}/api/companies`);
-        const companiesRes = await fetch(`${EXPRESS_URL}/api/companies`);
-
-        if (!companiesRes.ok) {
-          throw new Error(`HTTP error! status: ${companiesRes.status}`);
-        }
-
-        const companies = await companiesRes.json();
-        console.log("Received companies:", companies);
-
-        if (!Array.isArray(companies)) {
-          throw new Error("Companies data is not an array");
-        }
-
-        setCompanies(companies);
-
-        // Fetch other dropdown data
-        const [yearsRes, fuelTypesRes] = await Promise.all([
+        setDropdownError(null);
+        const [companiesRes, yearsRes, fuelTypesRes] = await Promise.all([
+          fetch(`${EXPRESS_URL}/api/companies`),
           fetch(`${EXPRESS_URL}/api/years`),
           fetch(`${EXPRESS_URL}/api/fuel-types`),
         ]);
 
-        const years = await yearsRes.json();
-        const fuelTypes = await fuelTypesRes.json();
+        if (!companiesRes.ok || !yearsRes.ok || !fuelTypesRes.ok) {
+          throw new Error("Failed to fetch dropdown data");
+        }
 
+        const [companies, years, fuelTypes] = await Promise.all([
+          companiesRes.json(),
+          yearsRes.json(),
+          fuelTypesRes.json(),
+        ]);
+
+        setCompanies(companies);
         setYears(years);
         setFuelTypes(fuelTypes);
       } catch (error) {
         console.error("Error fetching dropdown data:", error);
-        setError(`Failed to load dropdown data: ${error.message}`);
+        setDropdownError(
+          "Failed to load dropdown data. Please try again later."
+        );
       }
     };
 
     fetchDropdownData();
-  }, []);
+  }, [EXPRESS_URL]);
 
   useEffect(() => {
     const fetchCarModels = async () => {
       if (formData.company && formData.company !== "Select Company") {
         try {
+          setDropdownError(null);
           const response = await fetch(
             `${EXPRESS_URL}/api/models/${formData.company}`
           );
+
+          if (!response.ok) {
+            throw new Error("Failed to fetch car models");
+          }
+
           const models = await response.json();
           setCarModels(models);
         } catch (error) {
           console.error("Error fetching car models:", error);
-          setError("Failed to load car models");
+          setDropdownError(
+            "Failed to load car models. Please try again later."
+          );
         }
       } else {
         setCarModels([]);
@@ -80,14 +84,29 @@ function App() {
     };
 
     fetchCarModels();
-  }, [formData.company]);
+  }, [formData.company, EXPRESS_URL]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
     setError(null);
+
+    // Validate form data
+    if (
+      !formData.company ||
+      !formData.model ||
+      !formData.year ||
+      !formData.fuelType ||
+      !formData.kilometers
+    ) {
+      setError("Please fill in all fields");
+      setLoading(false);
+      return;
+    }
+
     try {
-      const response = await fetch(`${FLASK_URL}/predict`, {
+      // First, get prediction from ML model
+      const mlResponse = await fetch(`${FLASK_URL}/predict`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -101,15 +120,16 @@ function App() {
         }),
       });
 
-      if (!response.ok) {
-        const errorData = await response.json();
+      if (!mlResponse.ok) {
+        const errorData = await mlResponse.json();
         throw new Error(errorData.error || "Prediction failed");
       }
 
-      const predictedPrice = await response.json();
+      const predictedPrice = await mlResponse.json();
       setPrediction(predictedPrice);
 
-      await fetch(`${EXPRESS_URL}/api/predict`, {
+      // Then, save the prediction to the database
+      const dbResponse = await fetch(`${EXPRESS_URL}/api/predict`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -119,6 +139,10 @@ function App() {
           predictedPrice,
         }),
       });
+
+      if (!dbResponse.ok) {
+        throw new Error("Failed to save prediction");
+      }
     } catch (error) {
       console.error("Error:", error);
       setError(error.message || "Error predicting price");
@@ -140,6 +164,8 @@ function App() {
         <h1 className="title">Car Price Predictor</h1>
         <p className="subtitle">Get an instant estimate for your car's value</p>
 
+        {dropdownError && <div className="error-message">{dropdownError}</div>}
+
         <form onSubmit={handleSubmit} className="prediction-form">
           <div className="form-group">
             <label>Select Company</label>
@@ -147,20 +173,24 @@ function App() {
               name="company"
               value={formData.company}
               onChange={handleChange}
-              className="form-select">
+              className="form-select"
+              required>
               <option value="">Select a company</option>
-              {Array.isArray(companies) &&
-                companies.map((company) => (
-                  <option key={company} value={company}>
-                    {company}
-                  </option>
-                ))}
+              {companies.map((company) => (
+                <option key={company} value={company}>
+                  {company}
+                </option>
+              ))}
             </select>
           </div>
 
           <div className="form-group">
             <label>Select Model</label>
-            <select name="model" value={formData.model} onChange={handleChange}>
+            <select
+              name="model"
+              value={formData.model}
+              onChange={handleChange}
+              required>
               <option value="">Select a model</option>
               {carModels.map((model) => (
                 <option key={model} value={model}>
@@ -172,7 +202,11 @@ function App() {
 
           <div className="form-group">
             <label>Year of Purchase</label>
-            <select name="year" value={formData.year} onChange={handleChange}>
+            <select
+              name="year"
+              value={formData.year}
+              onChange={handleChange}
+              required>
               <option value="">Select year</option>
               {years.map((year) => (
                 <option key={year} value={year}>
@@ -187,7 +221,8 @@ function App() {
             <select
               name="fuelType"
               value={formData.fuelType}
-              onChange={handleChange}>
+              onChange={handleChange}
+              required>
               <option value="">Select fuel type</option>
               {fuelTypes.map((fuel) => (
                 <option key={fuel} value={fuel}>
@@ -205,10 +240,15 @@ function App() {
               value={formData.kilometers}
               onChange={handleChange}
               placeholder="Enter kilometers driven"
+              min="0"
+              required
             />
           </div>
 
-          <button type="submit" className="predict-button" disabled={loading}>
+          <button
+            type="submit"
+            className="predict-button"
+            disabled={loading || dropdownError}>
             {loading ? "Predicting..." : "Predict Price"}
           </button>
 

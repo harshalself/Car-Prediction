@@ -24,5 +24,10 @@
     "eslint-plugin-react-refresh": "^0.4.16",
     "globals": "^15.14.0",
     "vite": "^6.0.5"
+  },
+  "build": {
+    "outDir": "dist",
+    "assetsDir": "assets",
+    "sourcemap": false
   }
 }

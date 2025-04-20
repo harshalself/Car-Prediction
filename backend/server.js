@@ -5,19 +5,28 @@ const dotenv = require("dotenv");
 const axios = require("axios");
 const csv = require("csv-parser");
 const fs = require("fs");
+const path = require("path");
 
 dotenv.config();
 
 const app = express();
 
 // Middleware
-app.use(cors());
+app.use(
+  cors({
+    origin:
+      process.env.NODE_ENV === "production"
+        ? process.env.FRONTEND_URL
+        : "http://localhost:3000",
+    credentials: true,
+  })
+);
 app.use(express.json());
 
 // Replace hardcoded values with environment variables
 const PORT = process.env.PORT || 8000;
 const MONGODB_URI = process.env.MONGODB_URI;
-const CSV_FILE_PATH = process.env.CSV_FILE_PATH;
+const CSV_FILE_PATH = path.join(__dirname, process.env.CSV_FILE_PATH);
 const FLASK_URL = process.env.FLASK_URL;
 
 // Load and process CSV data
@@ -75,17 +84,26 @@ app.get("/api/fuel-types", (req, res) => {
   res.json(fuelTypes);
 });
 
-// MongoDB connection
-mongoose
-  .connect(MONGODB_URI)
-  .then(() => {
-    console.log("✅ Connected to MongoDB successfully");
-  })
-  .catch((err) => {
-    console.error("❌ MongoDB connection error:", err.message);
-    // Optionally exit the process on connection failure
-    // process.exit(1);
-  });
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).json({ error: "Something went wrong!" });
+});
+
+// MongoDB connection with retry logic
+const connectWithRetry = () => {
+  mongoose
+    .connect(MONGODB_URI)
+    .then(() => {
+      console.log("✅ Connected to MongoDB successfully");
+    })
+    .catch((err) => {
+      console.error("❌ MongoDB connection error:", err.message);
+      setTimeout(connectWithRetry, 5000); // Retry after 5 seconds
+    });
+};
+
+connectWithRetry();
 
 // Car prediction schema
 const predictionSchema = new mongoose.Schema({
@@ -133,6 +151,7 @@ app.post("/api/predict", async (req, res) => {
   }
 });
 
+// Start server
 app.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);
 });
